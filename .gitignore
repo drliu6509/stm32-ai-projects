@@ -1,0 +1,26 @@
+# Keil MDK-ARM 构建产物（忽略）
+OBJ/
+Listings/
+DebugConfig/
+*.o
+*.d
+*.crf
+*.axf
+*.lnp
+*.htm
+*.dep
+*.bak
+*.lst
+*.map
+*.sct
+*.hex
+*.uvoptx
+*.uvguix
+*.uvguix.*
+*.scvd
+JLinkLog.txt
+JLinkSettings.ini
+
+# 系统文件
+Thumbs.db
+Desktop.ini
