@@ -32,6 +32,12 @@
 #define MP3UI_TIME_Y      75            //时间Y坐标
 #define MP3UI_INDEX_Y     105           //歌曲索引Y坐标
 
+//进度条参数
+#define MP3UI_PBAR_X     10             //进度条X坐标
+#define MP3UI_PBAR_Y     150            //进度条Y坐标
+#define MP3UI_PBAR_H     6              //进度条高度
+#define MP3UI_PBAR_W     (lcddev.width-20)   //进度条宽度
+
 //按钮参数
 #define MP3UI_BTN_H       40            //按钮高度
 #define MP3UI_BTN_GAP     8             //按钮间距
@@ -60,6 +66,8 @@ static u8 mp3ui_action=MP3UI_ACTION_NONE;		//当前触摸动作
 static u8 mp3ui_vol=40;							//当前音量(0~63)
 static u8 mp3ui_playing=1;						//当前播放状态(1播放,0暂停)
 static u8 mp3ui_presslast=0;					//上一次按下状态,用于检测按下沿
+static u8 mp3ui_dragstate=0;					//是否正在拖动进度条(1拖动,0未拖动)
+static u32 mp3ui_dragsec=0;						//拖动位置对应的秒数
 
 //绘制一个按钮
 //btn:按钮结构体指针
@@ -109,6 +117,30 @@ static u8 mp3ui_btn_check(u16 x,u16 y)
 		}
 	}
 	return 0XFF;//不在任何按钮内
+}
+//绘制进度条
+//cur:当前播放时间(秒)
+//total:歌曲总时间(秒)
+void mp3ui_progbar_draw(u32 cur,u32 total)
+{
+	static u32 lastsec=0XFFFFFFFF;
+	u32 prog;
+	if(total==0)//总时间为0,重置缓存,等待播放信息就绪
+	{
+		lastsec=0XFFFFFFFF;
+		LCD_Fill(MP3UI_PBAR_X,MP3UI_PBAR_Y-2,MP3UI_PBAR_X+MP3UI_PBAR_W-1,MP3UI_PBAR_Y+MP3UI_PBAR_H+1,0XDFFF);
+		return;
+	}
+	if(cur==lastsec)return;//无变化,不重绘
+	if(cur>total)cur=total;
+	lastsec=cur;
+	prog=(u32)((unsigned long long)cur*MP3UI_PBAR_W/total);			//计算进度像素
+	//绘制进度条背景
+	LCD_Fill(MP3UI_PBAR_X,MP3UI_PBAR_Y-2,MP3UI_PBAR_X+MP3UI_PBAR_W-1,MP3UI_PBAR_Y+MP3UI_PBAR_H+1,0XDFFF);
+	//绘制已播放部分
+	if(prog>0)LCD_Fill(MP3UI_PBAR_X,MP3UI_PBAR_Y,MP3UI_PBAR_X+prog-1,MP3UI_PBAR_Y+MP3UI_PBAR_H-1,BLUE);
+	//绘制拖动点
+	if(prog>2)LCD_Fill(MP3UI_PBAR_X+prog-3,MP3UI_PBAR_Y-2,MP3UI_PBAR_X+prog+1,MP3UI_PBAR_Y+MP3UI_PBAR_H+1,RED);
 }
 //按下高亮显示按钮
 //btn:按钮编号
@@ -179,6 +211,8 @@ void mp3ui_init(void)
 	mp3ui_vol_show();													//显示音量
 	//显示默认时间
 	mp3ui_time_refresh();
+	//绘制进度条背景
+	LCD_Fill(MP3UI_PBAR_X,MP3UI_PBAR_Y-2,MP3UI_PBAR_X+MP3UI_PBAR_W-1,MP3UI_PBAR_Y+MP3UI_PBAR_H+1,0XDFFF);
 	//计算按钮宽度和位置
 	btn_w=(lcddev.width-6*MP3UI_BTN_GAP)/MP3UI_BTN_NUM;		//按钮宽度      
 	btn_y=lcddev.height-MP3UI_BTN_H-MP3UI_BTN_Y_OFF;		//按钮Y坐标     
@@ -198,6 +232,7 @@ void mp3ui_init(void)
 		mp3ui_btn_draw(&mp3ui_btns[i],MP3UI_BTN_COLOR);		//绘制按钮
 	}
 	mp3ui_presslast=0;													//清除按下状态
+	mp3ui_dragstate=0;													//清除拖动状态
 }
 //显示歌曲名和索引
 //name:歌曲文件名
@@ -214,11 +249,16 @@ void mp3ui_show_song(u8 *name,u16 cur,u16 total)
 	LCD_ShowxNum(10+45,MP3UI_INDEX_Y,cur,3,16,0X80);		//当前歌曲序号  
 	LCD_ShowChar(10+45+24,MP3UI_INDEX_Y,'/',16,0);
 	LCD_ShowxNum(10+45+32,MP3UI_INDEX_Y,total,3,16,0X80);	//歌曲总数      
+	//重置进度条显示
+	mp3ui_progbar_draw(0,0);
 }
 //显示提示信息
 //msg:提示信息字符串
 void mp3ui_show_msg(u8 *msg)
 {
+	static u8 lastmsg[30];                                              //保存上一次提示内容
+	if(strcmp((char*)lastmsg,(char*)msg)==0)return;             //提示内容相同,不重复绘制(避免高速闪烁)
+	strcpy((char*)lastmsg,(char*)msg);                          //记录本次提示
 	POINT_COLOR=RED;
 	LCD_Fill(10,MP3UI_NAME_Y,lcddev.width-10,MP3UI_NAME_Y+15,MP3UI_BK_COLOR);
 	LCD_ShowString(10,MP3UI_NAME_Y,lcddev.width-20,16,16,msg);
@@ -273,26 +313,70 @@ u8 mp3ui_get_action(void)
 	return mp3ui_action;
 }
 //播放过程中的触摸控制
-//由mp3_play_song的播放循环中调用,实现按钮响应和时间刷新
+//由mp3_play_song的播放循环中调用,实现按钮响应,进度条拖动和时间刷新
 void mp3ui_play_ctrl(void)
 {
 	u8 press;
 	u8 btn;
+	u16 x;
+	u16 y;
+	u16 y1;
+	u16 y2;
+	u32 sec;
 
 	tp_dev.scan(0);														//扫描触摸屏
 	press=(tp_dev.sta&TP_PRES_DOWN)?1:0;	//是否按下
-	if(press&&!mp3ui_presslast)								//按下沿(只有第一次按下时响应)
+	x=tp_dev.x[0];
+	y=tp_dev.y[0];
+	y1=MP3UI_PBAR_Y-15;												//进度条触摸区域上边界
+	y2=MP3UI_PBAR_Y+MP3UI_PBAR_H+15;							//进度条触摸区域下边界
+	if(press&&!mp3ui_presslast)//按下沿(只有第一次按下时响应)
 	{
-		btn=mp3ui_btn_check(tp_dev.x[0],tp_dev.y[0]);//判断按钮
-		if(btn!=0XFF)
+		if(y>=y1&&y<=y2)//按在进度条区域,进入拖动
 		{
-			mp3ui_btn_highlight(btn);							//按下高亮指示
-			mp3ui_btn_action(btn);								//执行按钮动作
+			mp3ui_dragstate=1;									//进入拖动状态
+			if(x<MP3UI_PBAR_X)x=MP3UI_PBAR_X;
+			if(x>MP3UI_PBAR_X+MP3UI_PBAR_W-1)x=MP3UI_PBAR_X+MP3UI_PBAR_W-1;
+			sec=(u32)((unsigned long long)(x-MP3UI_PBAR_X)*audiodev.totsec/MP3UI_PBAR_W);//计算目标时间
+			mp3ui_dragsec=sec;
+			mp3ui_progbar_draw(sec,audiodev.totsec);			//更新进度条显示
+		}else//按在按钮区域
+		{
+			btn=mp3ui_btn_check(x,y);
+			if(btn!=0XFF)
+			{
+				mp3ui_btn_highlight(btn);							//按下高亮指示
+				mp3ui_btn_action(btn);								//执行按钮动作
+			}
 		}
-	}else if(!press&&mp3ui_presslast)			//松开沿
+	}else if(press&&mp3ui_presslast)//按住拖动中
 	{
-		mp3ui_btns_redraw();										//松开恢复所有按钮颜色
+		if(mp3ui_dragstate)//正在拖动进度条
+		{
+			if(y>=y1&&y<=y2)
+			{
+				if(x<MP3UI_PBAR_X)x=MP3UI_PBAR_X;
+				if(x>MP3UI_PBAR_X+MP3UI_PBAR_W-1)x=MP3UI_PBAR_X+MP3UI_PBAR_W-1;
+				sec=(u32)((unsigned long long)(x-MP3UI_PBAR_X)*audiodev.totsec/MP3UI_PBAR_W);//计算目标时间
+				if(sec!=mp3ui_dragsec)//位置变化才更新
+				{
+					mp3ui_dragsec=sec;
+					mp3ui_progbar_draw(sec,audiodev.totsec);	//拖动时实时更新显示
+				}
+			}
+		}
+	}else if(!press&&mp3ui_presslast)//松开沿
+	{
+		if(mp3ui_dragstate)//结束拖动,执行跳转
+		{
+			audiodev.seeksec=mp3ui_dragsec;					//设置跳转目标时间
+			audiodev.cursec=mp3ui_dragsec;					//同步显示
+			mp3ui_dragstate=0;								//清除拖动状态
+		}
+		mp3ui_btns_redraw();										//恢复所有按钮颜色
 	}
 	mp3ui_presslast=press;									//记录本次按下状态
+	//绘制进度条(未拖动时显示实际播放位置)
+	if(!mp3ui_dragstate)mp3ui_progbar_draw(audiodev.cursec,audiodev.totsec);
 	mp3ui_time_refresh();										//刷新时间/码率显示
 }

@@ -276,6 +276,7 @@ u8 mp3_play_song(u8* fname)
 	audiodev.i2sbuf2=mymalloc(SRAMIN,2304*2);
 	audiodev.tbuf=mymalloc(SRAMIN,2304*2);
 	audiodev.file_seek=mp3_file_seek;
+	audiodev.seeksec=0XFFFFFFFF;//clear progress seek request
 	
 	if(!mp3ctrl||!buffer||!audiodev.file||!audiodev.i2sbuf1||!audiodev.i2sbuf2||!audiodev.tbuf)//内存申请失败
 	{
@@ -314,6 +315,25 @@ u8 mp3_play_song(u8* fname)
 		audio_start();								//开始播放 
 		while(res==0)
 		{
+			if(audiodev.seeksec!=0XFFFFFFFF)   //process progress seek request
+			{
+			u32 seekpos;
+			if(mp3ctrl->totsec<=1)seekpos=mp3ctrl->datastart;
+			else
+			{
+			if(audiodev.seeksec>=mp3ctrl->totsec)audiodev.seeksec=mp3ctrl->totsec-1;
+			seekpos=mp3ctrl->datastart+(u32)((unsigned long long)audiodev.seeksec*(audiodev.file->fsize-mp3ctrl->datastart)/mp3ctrl->totsec);
+			
+			}
+			f_lseek(audiodev.file,seekpos);
+			MP3FreeDecoder(mp3decoder);
+			mp3decoder=MP3InitDecoder();
+			bytesleft=0;
+			memset(audiodev.i2sbuf1,0,2304*2);
+			memset(audiodev.i2sbuf2,0,2304*2);
+			audiodev.cursec=audiodev.seeksec;
+			audiodev.seeksec=0XFFFFFFFF;
+			}
 			readptr=buffer;	//MP3读指针指向buffer
 			offset=0;		//偏移量为0
 			outofdata=0;	//数据正常
@@ -363,7 +383,7 @@ u8 mp3_play_song(u8* fname)
 						{
 							memset(buffer+bytesleft+br,0,MP3_FILE_BUF_SZ-bytesleft-br); 
 						}
-						bytesleft=MP3_FILE_BUF_SZ;  
+						bytesleft=MP3_FILE_BUF_SZ;
 						readptr=buffer; 
 					} 	
  					while(audiodev.status&(1<<1))//正常播放中
@@ -376,6 +396,11 @@ u8 mp3_play_song(u8* fname)
 						audiodev.samplerate=mp3ctrl->samplerate;
 						audiodev.bps=16;
 						mp3ui_play_ctrl();	//touch control and time refresh
+						if(audiodev.seeksec!=0XFFFFFFFF)
+						{
+						    outofdata=1;
+						    break;
+						}
  						if(audiodev.status&0X01)break;//没有按下暂停 
 					}
 					if((audiodev.status&(1<<1))==0)//请求结束播放/播放完成
