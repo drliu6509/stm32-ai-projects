@@ -20,7 +20,15 @@ DebugConfig/
 *.scvd
 JLinkLog.txt
 JLinkSettings.ini
+build_log.txt
+build_log*.txt
 
 # 系统文件
 Thumbs.db
 Desktop.ini
+
+# LVGL 官方源码（各工程已内嵌 LVGL/src，可从 GitHub 获取）
+_lvgl_src/
+
+# 开发指南文档（不纳入版本管理）
+LVGL开发指南_V1.5.pdf
